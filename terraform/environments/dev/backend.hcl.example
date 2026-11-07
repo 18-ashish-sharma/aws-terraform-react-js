@@ -1,0 +1,10 @@
+# Copy to backend.hcl (git-ignored) and run: terraform init -backend-config=backend.hcl
+# The state bucket and lock table are created once, outside this configuration (see README).
+bucket         = "tfstate-123456789012-ap-south-1"
+key            = "aws-terraform-react-js/dev.tfstate"
+region         = "ap-south-1"
+encrypt        = true
+dynamodb_table = "terraform-state-lock"
+
+# Terraform >= 1.10 can lock with an S3 lock file instead of DynamoDB:
+# use_lockfile = true
