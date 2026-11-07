@@ -1,0 +1,122 @@
+name: deploy
+
+# Manual deployment of the dev environment using OpenID Connect (no AWS access keys).
+# Needs one-time AWS setup - see "CI/CD" in README.md.
+on:
+  workflow_dispatch:
+
+# One deployment at a time; the state lock is the second line of defence.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.11.0"
+  TF_DIR: terraform/environments/dev
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: react-app/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: react-app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: react-build
+          path: react-app/build
+          retention-days: 1
+
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # lets the job request an OIDC token from GitHub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform init
+        run: >
+          terraform -chdir="$TF_DIR" init -input=false
+          -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}"
+          -backend-config="key=aws-terraform-react-js/dev.tfstate"
+          -backend-config="region=${{ env.AWS_REGION }}"
+          -backend-config="dynamodb_table=${{ vars.TFSTATE_LOCK_TABLE }}"
+          -backend-config="encrypt=true"
+      - name: terraform plan
+        run: terraform -chdir="$TF_DIR" plan -input=false -var="aws_region=$AWS_REGION" -out=tfplan
+      - name: Plan summary
+        run: terraform -chdir="$TF_DIR" show -no-color tfplan | tail -n 50 >> "$GITHUB_STEP_SUMMARY"
+      # The saved plan is applied as-is after approval, so what was reviewed is what runs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev
+          path: ${{ env.TF_DIR }}/tfplan
+          retention-days: 1
+
+  apply-and-deploy:
+    needs: [build, plan]
+    runs-on: ubuntu-latest
+    environment: dev # add required reviewers to this GitHub environment to gate the apply
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false # keeps 'terraform output -raw' clean
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev
+          path: ${{ env.TF_DIR }}
+      - name: terraform init
+        run: >
+          terraform -chdir="$TF_DIR" init -input=false
+          -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}"
+          -backend-config="key=aws-terraform-react-js/dev.tfstate"
+          -backend-config="region=${{ env.AWS_REGION }}"
+          -backend-config="dynamodb_table=${{ vars.TFSTATE_LOCK_TABLE }}"
+          -backend-config="encrypt=true"
+      - name: terraform apply (saved plan)
+        run: terraform -chdir="$TF_DIR" apply -input=false tfplan
+      - uses: actions/download-artifact@v4
+        with:
+          name: react-build
+          path: build
+      - name: Upload to S3
+        run: |
+          BUCKET=$(terraform -chdir="$TF_DIR" output -raw bucket_name)
+          # Hashed bundles never change: cache for a year. Upload them first so the new
+          # index.html never points at files that are not there yet.
+          aws s3 sync build/static "s3://$BUCKET/static" --delete \
+            --cache-control "public,max-age=31536000,immutable"
+          # Everything else (index.html, manifest.json, ...) is revalidated on every request.
+          aws s3 sync build "s3://$BUCKET" --delete --exclude "static/*" \
+            --cache-control "no-cache"
+      - name: Smoke test
+        run: |
+          URL=$(terraform -chdir="$TF_DIR" output -raw website_url)
+          # A new distribution takes a few minutes to deploy to the edge.
+          curl -fsS --retry 10 --retry-delay 30 --retry-all-errors "$URL/" | grep -q 'id="root"'
+          echo "Deployed: $URL" >> "$GITHUB_STEP_SUMMARY"
