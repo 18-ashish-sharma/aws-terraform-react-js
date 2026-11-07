@@ -30,7 +30,7 @@ flowchart LR
 
 How a request is served:
 
-- `/static/js/main.<hash>.js` is cached at the edge for up to a year (`Managed-CachingOptimized`);
+- `/static/index-<hash>.js` is cached at the edge for up to a year (`Managed-CachingOptimized`);
   the file name changes whenever the content does.
 - `/index.html` is never cached (`Managed-CachingDisabled`), so a new deploy is live at once
   without a cache invalidation.
@@ -42,7 +42,7 @@ How a request is served:
 
 ```
 .
-├── react-app/                      Create React App (React 18)
+├── react-app/                      React 18, built with Vite into react-app/build
 ├── terraform/
 │   ├── modules/static-site/        S3 bucket + CloudFront + OAC (reusable module)
 │   │   ├── s3.tf                   bucket, public access block, encryption, versioning, lifecycle, policy
@@ -61,7 +61,7 @@ environment can never touch another.
 
 ## Prerequisites
 
-- Terraform >= 1.6, AWS CLI v2, Node.js 20
+- Terraform >= 1.6, AWS CLI v2, Node.js 24 (LTS)
 - AWS credentials for an account where you can create S3, CloudFront and IAM resources
 - An S3 bucket and DynamoDB table for remote state (one-time):
 
@@ -106,7 +106,7 @@ empties the bucket first).
 | Workflow | Trigger | Credentials | What it does |
 |---|---|---|---|
 | `terraform.yml` | PR, push to `main` | none | `fmt -check`, `init -backend=false` + `validate` for the module and the root, `tflint`, `checkov` (SARIF to the Security tab) |
-| `app.yml` | PR, push to `main` | none | `npm ci`, `npm test`, `npm run build`, uploads the build |
+| `app.yml` | PR, push to `main` | none | `npm ci`, `npm test` (Vitest), `npm run build` (Vite), uploads the build |
 | `deploy.yml` | manual (`workflow_dispatch`) | OIDC | build -> `terraform plan` (saved plan) -> **approval** on the `dev` GitHub environment -> `apply` that exact plan -> `aws s3 sync` -> smoke test |
 
 ### One-time OIDC setup
