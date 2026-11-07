@@ -1,6 +1,6 @@
 {
-  "short_name": "React App",
-  "name": "Create React App Sample",
+  "short_name": "React on AWS",
+  "name": "React on AWS (S3 + CloudFront)",
   "icons": [
     {
       "src": "favicon.ico",
